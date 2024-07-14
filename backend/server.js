@@ -2,9 +2,10 @@ import { ApolloServer } from "@apollo/server";
 import { expressMiddleware } from "@apollo/server/express4";
 import express from "express";
 import cors from "cors";
+import DataLoader from "dataloader";
+import linkedList from "./linked_list.js";
 
-// example derived from https://marmelab.com/blog/2017/09/06/dive-into-graphql-part-iii-building-a-graphql-server-with-nodejs.html
-
+// Data
 const tweets = [
   { id: 1, body: "Lorem Ipsum", date: new Date(), author_id: 10 },
   { id: 2, body: "Sic dolor amet", date: new Date(), author_id: 11 },
@@ -45,6 +46,16 @@ const typeDefs = `#graphql
     avatar_url: Url
   }
 
+  type Node {
+    value: Int
+    next: Node
+  }
+
+  type LinkedList {
+    head: Node
+    length: Int
+  }
+
   scalar Url
   scalar Date
 
@@ -52,12 +63,14 @@ const typeDefs = `#graphql
     Tweet(id: ID!): Tweet
     Tweets(limit: Int, sortField: String, sortOrder: String): [Tweet]
     User: User
+    linkedList: LinkedList
   }
 
   type Mutation {
     createTweet(body: String, author_id: ID!): Tweet
     deleteTweet(id: ID!): Tweet
     markTweetRead(id: ID!): Boolean
+    addNode(value: Int!): Node
   }
 `;
 
@@ -65,11 +78,14 @@ const resolvers = {
   Query: {
     Tweets: () => tweets,
     Tweet: (_, { id }) => tweets.find((tweet) => tweet.id == id),
+    linkedList: () => ({
+      head: linkedList.getHead(),
+      length: linkedList.getLength(),
+    }),
   },
   Tweet: {
     Author: (tweet, _, context) => {
-      console.log(`loading author!`);
-      return authors.find((author) => author.id == tweet.author_id);
+      return context.authorLoader.load(tweet.author_id);
     },
   },
   User: {
@@ -90,7 +106,28 @@ const resolvers = {
       tweets.push(newTweet);
       return newTweet;
     },
+    addNode: (_, { value }) => linkedList.addNode(value),
   },
+  LinkedList: {
+    head: (list) => list.head,
+    length: (list) => list.length,
+  },
+  Node: {
+    next: (node) => node.next,
+  },
+};
+
+// Create DataLoader instance
+const createAuthorLoader = () => {
+  return new DataLoader((authorIds) => {
+    console.log(`Loading authors for IDs: ${authorIds}`);
+    const filteredAuthors = authors.filter((author) =>
+      authorIds.includes(author.id)
+    );
+    return Promise.resolve(
+      authorIds.map((id) => filteredAuthors.find((author) => author.id === id))
+    );
+  });
 };
 
 const app = express();
@@ -100,6 +137,9 @@ const app = express();
 const server = new ApolloServer({
   typeDefs,
   resolvers,
+  context: async () => ({
+    authorLoader: createAuthorLoader(),
+  }),
 });
 
 await server.start();
@@ -109,9 +149,11 @@ app.use(
   "/",
   cors(),
   express.json(),
-  // expressMiddleware accepts the same arguments:
-  // an Apollo Server instance and optional configuration options
-  expressMiddleware(server, {})
+  expressMiddleware(server, {
+    context: async () => ({
+      authorLoader: createAuthorLoader(),
+    }),
+  })
 );
 
 const port = process.env.PORT || 4000;
